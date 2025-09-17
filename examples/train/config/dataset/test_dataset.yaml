@@ -1,0 +1,26 @@
+train_ds:
+  data_root: "/home/daksh/data/DeSTA2Audio/LibriTTS_R"
+  manifest_filepaths:
+    - "/home/daksh/MTP/DeSTA2/self/Trial/train_manifest.jsonl"
+  batch_sampler: null
+  max_seq_length: 300
+  batch_size: 2  # Small batch size for testing
+  shuffle: True
+  pin_memory: True
+  num_workers: 0  # Use 0 for debugging
+  drop_last: True
+  return_seed: False
+  answer_shift: 0
+
+validation_ds:
+  data_root: "/home/daksh/data/DeSTA2Audio/LibriTTS_R"
+  manifest_filepaths:
+    - "/home/daksh/MTP/DeSTA2/self/Trial/val_manifest.jsonl"
+  batch_sampler: null
+  max_seq_length: 512
+  batch_size: 1  # Single sample for validation
+  shuffle: False
+  pin_memory: True
+  num_workers: 0
+  drop_last: True
+  return_seed: False

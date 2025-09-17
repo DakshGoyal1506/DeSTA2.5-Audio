@@ -1,26 +1,49 @@
 train_ds: 
-    data_root: "/home/jovyan/workspace/data/audios"
+    data_root: "/home/daksh/data/DeSTA2Audio/desta_aqa5m"
+    # manifest_filepaths: [
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.0.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.1.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.2.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.3.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.4.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.5.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.6.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.7.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.8.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.9.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.0.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.1.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.2.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.3.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.4.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.5.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.6.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.7.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.8.jsonl",
+    #   "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.9.jsonl"
+    # ]
+
     manifest_filepaths: [
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.0.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.1.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.2.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.3.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.4.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.5.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.6.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.7.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.8.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/audio.9.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.0.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.1.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.2.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.3.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.4.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.5.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.6.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.7.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.8.jsonl",
-      "https://huggingface.co/datasets/DeSTA-ntu/DeSTA-AQA5M-FROM-Llama3.1-8B-Instruct/resolve/main/speech.9.jsonl",
+      "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.0.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.1.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.2.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.3.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.4.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.5.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.6.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.7.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.8.jsonl",
+      # "/home/daksh/data/DeSTA2Audio/desta_aqa5m/audio.9.jsonl",
+      "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.0.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.1.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.2.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.3.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.4.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.5.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.6.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.7.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.8.jsonl",
+    #   "/home/daksh/data/DeSTA2Audio/desta_aqa5m/speech.9.jsonl"
     ]
 
     batch_sampler: null
@@ -33,14 +56,15 @@ train_ds:
     return_seed: False
     answer_shift: 0
 
-  validation_ds:
-    batch_sampler: null
-    data_root: "/home/jovyan/workspace/data/audios"
-    manifest_filepaths: ["/home/jovyan/workspace/eval_manifest/val.jsonl"]
-    max_seq_length: 512
-    batch_size: 4
-    shuffle: False
-    pin_memory: True
-    num_workers: 0
-    drop_last: True
-    return_seed: False
+validation_ds:
+  batch_sampler: null
+  data_root: "/home/daksh/data/DeSTA2/desta_aqa5m"
+  manifest_filepaths:
+    - "/home/daksh/data/DeSTA2Audio/eval_manifest/val.jsonl"
+  max_seq_length: 512
+  batch_size: 4
+  shuffle: False
+  pin_memory: True
+  num_workers: 4
+  drop_last: True
+  return_seed: False

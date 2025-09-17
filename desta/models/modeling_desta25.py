@@ -2,16 +2,18 @@
 import os
 import torch
 import torch.nn as nn
+import gc
+import time
 from collections import OrderedDict
 import logging
 
 from dataclasses import dataclass
 from desta.utils.audio import AudioSegment
-
 from transformers import AutoTokenizer, AutoProcessor
 from transformers import PretrainedConfig, PreTrainedModel, AutoModelForCausalLM, AutoConfig
 from transformers.models.bert.modeling_bert import BertEncoder
 from transformers import WhisperForConditionalGeneration, BertConfig
+from transformers.models.whisper import WhisperConfig
 from safetensors.torch import load_file
 
 
@@ -47,6 +49,8 @@ class QformerConnector(nn.Module):
         super().__init__()
         self.config = config
 
+        # Handle different Whisper model architectures
+        # For OpenAI Whisper models
         if self.config.encoder_model_id == "openai/whisper-medium":
             self.config.target_layer_ids = [5, 11, 17, 23]
         elif self.config.encoder_model_id == "openai/whisper-small":
@@ -55,6 +59,20 @@ class QformerConnector(nn.Module):
             self.config.target_layer_ids = [0, 1, 2, 3]
         elif self.config.encoder_model_id == "openai/whisper-large-v3":
             self.config.target_layer_ids = [7, 15, 23, 31]
+        # For custom/local Whisper models (including AI4Bharat Indic Whisper)
+        elif hasattr(self.config, 'whisper_local_weights') and self.config.whisper_local_weights:
+            # Determine layer configuration based on model path
+            model_path_lower = str(self.config.whisper_local_weights).lower()
+            if "medium" in model_path_lower:
+                self.config.target_layer_ids = [5, 11, 17, 23]  # Same as openai/whisper-medium
+            elif "small" in model_path_lower:
+                self.config.target_layer_ids = [2, 5, 8, 11]  # Same as openai/whisper-small
+            elif "large" in model_path_lower:
+                self.config.target_layer_ids = [7, 15, 23, 31]  # Same as openai/whisper-large
+            else:
+                # Default to medium configuration for unknown custom models
+                self.config.target_layer_ids = [5, 11, 17, 23]
+            print(f"🔧 Custom Whisper model: {len(self.config.target_layer_ids)} target layers configured")
         else:
             raise NotImplementedError(f"model_id {self.config.encoder_model_id} not implemented")
 
@@ -80,6 +98,23 @@ class QformerConnector(nn.Module):
                     nn.LayerNorm(self.config.encoder_config.d_model),
                     nn.Linear(self.config.encoder_config.d_model, self.config.llm_config.hidden_size) # project to llm hidden size
                 )
+                
+            # Load QFormer weights if available
+            qformer_local = getattr(self.config, "qformer_local_weights", None)
+            if qformer_local and os.path.exists(qformer_local):
+                print(f"🔧 Loading QFormer weights from {qformer_local}")
+                try:
+                    if qformer_local.endswith('.safetensors'):
+                        state = load_file(qformer_local)
+                    else:
+                        state = torch.load(qformer_local, map_location="cpu")
+                    missing, unexpected = self.qformer.load_state_dict(state, strict=False)
+                    if missing or unexpected:
+                        print(f"   QFormer loading: {len(missing)} missing, {len(unexpected)} unexpected keys")
+                    else:
+                        print(f"   ✅ QFormer weights loaded successfully")
+                except Exception as e:
+                    print(f"   ❌ Failed to load QFormer weights: {e}")
         else:
             raise NotImplementedError(f"connector_mode {self.config.connector_mode} not implemented")
         
@@ -118,11 +153,303 @@ class WhisperPerception(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.whisper = WhisperForConditionalGeneration.from_pretrained(
-            self.config.encoder_model_id, cache_dir=os.getenv("HF_HOME"))
-
+        whisper_local = getattr(self.config, "whisper_local_weights", None)
+        if whisper_local and os.path.isdir(whisper_local):
+            print(f"  🔧 Loading local Whisper model from: {whisper_local}")
+            self.whisper = self._load_local_whisper_model(whisper_local)
+        elif whisper_local and os.path.isfile(whisper_local):
+            print(f"  🔧 Loading Whisper weights from file: {whisper_local}")
+            self.whisper = self._load_whisper_from_file(whisper_local)
+        else:
+            print(f"  🔧 Loading Whisper from HuggingFace: {self.config.encoder_model_id}")
+            self.whisper = WhisperForConditionalGeneration.from_pretrained(
+                self.config.encoder_model_id, cache_dir=os.getenv("HF_HOME")
+            )
         self.connector = QformerConnector(config)
 
+    def _sanitize_state_dict(self, state_dict):
+        if 'state_dict' in state_dict and isinstance(state_dict['state_dict'], dict):
+            state_dict = state_dict['state_dict']
+        if 'model' in state_dict and isinstance(state_dict['model'], dict):
+            state_dict = state_dict['model']
+        
+        new_state = {}
+        sample_keys = list(state_dict.keys())[:3]
+        print(f"    🔧 Checkpoint sample keys: {sample_keys}")
+        
+        # Check if keys need "model." prefix added or removed
+        has_model_prefix = any(k.startswith('model.') for k in sample_keys)
+        has_encoder_decoder_only = any(k.startswith('encoder.') or k.startswith('decoder.') for k in sample_keys)
+        
+        print(f"    🔧 has_model_prefix: {has_model_prefix}, has_encoder_decoder_only: {has_encoder_decoder_only}")
+        
+        for k, v in state_dict.items():
+            nk = k
+            
+            # Remove common prefixes first
+            if nk.startswith('module.'):
+                nk = nk[len('module.') :]
+            
+            # Handle model prefix logic
+            if has_model_prefix:
+                # Keep model. prefix (checkpoint already has it - don't remove!)
+                # This is the case for our Indic Whisper: model.encoder.*
+                pass  # Keep the key as is
+            elif has_encoder_decoder_only:
+                # Add model. prefix (checkpoint has encoder.* but model expects model.encoder.*)
+                if nk.startswith('encoder.') or nk.startswith('decoder.'):
+                    nk = 'model.' + nk
+            else:
+                # Fallback: remove model. prefix (original behavior for other cases)
+                if nk.startswith('model.'):
+                    nk = nk[len('model.') :]
+            
+            new_state[nk] = v
+            
+        print(f"    🔧 After sanitization sample: {list(new_state.keys())[:3]}")
+        return new_state
+
+    def _ensure_safetensors(self, local_path):
+        """Convert pytorch_model.bin to model.safetensors for faster loading (always recreate for local models)"""
+        bin_path = os.path.join(local_path, 'pytorch_model.bin')
+        safe_path = os.path.join(local_path, 'model.safetensors')
+
+        if not os.path.exists(bin_path):
+            return  # nothing to do if no pytorch_model.bin
+
+        if not getattr(self.config, 'whisper_autoconvert_to_safetensors', True):
+            return
+
+        # Delete existing safetensors file to ensure clean replacement
+        if os.path.exists(safe_path):
+            print('  🗑️ Removing existing model.safetensors to ensure clean replacement...')
+            os.remove(safe_path)
+        
+        # Create new safetensors file with full model (including decoder) for inference
+        print('  🔄 Creating model.safetensors with full model weights (including decoder)...')
+        try:
+            from safetensors.torch import save_file
+            
+            raw_state = torch.load(bin_path, map_location='cpu', weights_only=True)
+            clean_state = self._sanitize_state_dict(raw_state)
+
+            # Keep ALL weights including decoder (needed for inference)
+            # Log some key information about what we're saving
+            encoder_keys = [k for k in clean_state.keys() if 'encoder' in k]
+            decoder_keys = [k for k in clean_state.keys() if 'decoder' in k]
+            print(f"    📊 Saving {len(encoder_keys)} encoder keys, {len(decoder_keys)} decoder keys")
+            
+            save_file(clean_state, safe_path)
+            del raw_state, clean_state
+            gc.collect()
+            
+            # Verify the conversion worked
+            safe_size = os.path.getsize(safe_path) / (1024**3)
+            print(f'  ✅ Created model.safetensors (full model with encoder+decoder, {safe_size:.2f} GB)')
+            
+        except ImportError:
+            print('  ⚠️ safetensors not installed, keeping pytorch_model.bin')
+        except Exception as e:
+            print(f'  ⚠️ safetensors conversion failed: {e}')
+
+    def _load_local_whisper_model(self, local_path):
+        has_pytorch_model = os.path.exists(os.path.join(local_path, 'pytorch_model.bin'))
+        has_config = os.path.exists(os.path.join(local_path, 'config.json'))
+        has_safetensors = os.path.exists(os.path.join(local_path, 'model.safetensors'))
+        pth_files = [f for f in os.listdir(local_path) if f.endswith('.pth') and not f.startswith('rng_state')]
+        force_manual = getattr(self.config, 'whisper_force_manual_load', False)
+        
+        # OLD CODE: Always ensure fresh safetensors for local models (to include full model with decoder)
+        # Commented out: Now we only create safetensors when using Strategy 1
+        # if has_config and has_pytorch_model:
+        #     try:
+        #         self._ensure_safetensors(local_path)
+        #         has_safetensors = os.path.exists(os.path.join(local_path, 'model.safetensors'))  # Recheck after conversion
+        #         print(f'  ✅ Safetensors conversion completed, preferring Strategy 1')
+        #     except Exception as e:
+        #         print(f'  ⚠️ safetensors conversion skipped: {e}')
+        
+        print(f'  🔧 Loading preferences: force_manual={force_manual}')
+        print('Local Whisper directory contents:')
+        print(f"    - config.json: {'✅' if has_config else '❌'}")
+        print(f"    - pytorch_model.bin: {'✅' if has_pytorch_model else '❌'}")
+        print(f"    - model.safetensors: {'✅' if has_safetensors else '❌'}")
+        print(f"    - .pth files: {len(pth_files)}")
+        
+        if has_pytorch_model:
+            model_size = os.path.getsize(os.path.join(local_path, 'pytorch_model.bin')) / (1024**3)
+            print(f"    - Model size: {model_size:.2f} GB")
+
+        # Strategy 0: Fast manual loading (RECOMMENDED for large files)
+        if has_config and has_pytorch_model and force_manual:
+            try:
+                print('  Strategy 0: Fast manual loading (optimized for large files)')
+                t0 = time.time()
+                
+                try:
+                    local_cfg = WhisperConfig.from_pretrained(local_path)
+                except Exception:
+                    from transformers.models.whisper.configuration_whisper import WhisperConfig as _WC
+                    local_cfg = _WC.from_json_file(os.path.join(local_path, 'config.json'))
+                
+                print(f"    Config loaded in {time.time() - t0:.2f}s")
+                
+                model = WhisperForConditionalGeneration(local_cfg)
+                print(f"    Architecture created in {time.time() - t0:.2f}s")
+                
+                print('    Loading weights...')
+                raw_state = torch.load(
+                    os.path.join(local_path, 'pytorch_model.bin'), 
+                    map_location='cpu',
+                    weights_only=True 
+                )
+                print(f"    Weights loaded from disk in {time.time() - t0:.2f}s")
+                
+                clean_state = self._sanitize_state_dict(raw_state)
+                missing, unexpected = model.load_state_dict(clean_state, strict=False)
+                print(f"    Strategy 0 completed in {time.time() - t0:.2f}s")
+                print(f"    Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+                
+                if missing or unexpected:
+                    print(f"    🔍 Weight loading details:")
+                    if missing:
+                        print(f"      Missing keys (first 5): {missing[:5]}")
+                    if unexpected:
+                        print(f"      Unexpected keys (first 5): {unexpected[:5]}")
+                
+                # Verify weights are loaded
+                conv1_weight = model.model.encoder.conv1.weight
+                conv1_bias = getattr(model.model.encoder.conv1, 'bias', None)
+                embed_pos = model.model.encoder.embed_positions.weight
+                print(f"    ✅ Weight verification:")
+                print(f"      conv1.weight: shape={conv1_weight.shape}, sum={float(conv1_weight.sum()):.2f}")  # type: ignore
+                if conv1_bias is not None:
+                    print(f"      conv1.bias: shape={conv1_bias.shape}, sum={float(conv1_bias.sum()):.2f}")  # type: ignore
+                print(f"      embed_positions: shape={embed_pos.shape}, sum={float(embed_pos.sum()):.2f}")  # type: ignore
+                
+                del raw_state, clean_state
+                gc.collect()
+                
+                return model
+            except Exception as e:
+                print(f"  ❌ Strategy 0 failed: {e}")
+
+        # Strategy 1: Optimized from_pretrained (FAST + STABLE with safetensors)
+        if has_config and (has_safetensors or has_pytorch_model) and not force_manual:
+            try:
+                # Create or refresh safetensors only for Strategy 1
+                if not has_safetensors and has_pytorch_model:
+                    print('  🔧 Strategy 1: Creating safetensors for optimized loading...')
+                    try:
+                        self._ensure_safetensors(local_path)
+                        has_safetensors = os.path.exists(os.path.join(local_path, 'model.safetensors'))
+                    except Exception as e:
+                        print(f'  ⚠️ Safetensors creation failed: {e}, using pytorch_model.bin')
+                
+                use_safetensors = has_safetensors
+                strategy_desc = f"{'safetensors' if use_safetensors else 'pytorch_model.bin'}"
+                print(f'  Strategy 1: Optimized from_pretrained (using {strategy_desc})')
+                t0 = time.time()
+                
+                model = WhisperForConditionalGeneration.from_pretrained(
+                    local_path,
+                    cache_dir=os.getenv('HF_HOME'),
+                    local_files_only=True,
+                    low_cpu_mem_usage=True,
+                    device_map=None,  
+                    use_safetensors=use_safetensors, 
+                    trust_remote_code=False,
+                )
+                
+                # Optimize attention implementation for faster inference
+                try:
+                    model.config._attn_implementation = "eager"
+                except Exception:
+                    pass
+                
+                print(f"    ✅ Strategy 1 completed in {time.time() - t0:.2f}s")
+                
+                # Quick verification with NaN/inf handling
+                conv1_weight = model.model.encoder.conv1.weight
+                embed_pos = model.model.encoder.embed_positions.weight
+                
+                conv1_sum = float(conv1_weight.sum())  # type: ignore
+                embed_sum = float(embed_pos.sum())  # type: ignore
+                
+                # Check for inf/nan values and provide safer reporting
+                conv1_status = "OK" if torch.isfinite(conv1_weight).all() else "HAS_INF/NAN"  # type: ignore
+                embed_status = "OK" if torch.isfinite(embed_pos).all() else "HAS_INF/NAN"  # type: ignore
+                
+                print(f"    🔍 Quick verification: conv1_weight sum={conv1_sum:.2f} ({conv1_status}), embed_pos sum={embed_sum:.2f} ({embed_status})")
+                
+                return model
+            except Exception as e:
+                print(f'  ❌ Strategy 1 failed: {e}')
+
+        # Strategy 2: Base + manual (backup)
+        if has_pytorch_model:
+            try:
+                print('  Strategy 2: Base architecture + manual loading')
+                base_model_id = self.config.encoder_model_id
+                base = WhisperForConditionalGeneration.from_pretrained(
+                    base_model_id, 
+                    cache_dir=os.getenv('HF_HOME'), 
+                    low_cpu_mem_usage=True
+                )
+                
+                print('    Loading custom weights...')
+                raw_state = torch.load(
+                    os.path.join(local_path, 'pytorch_model.bin'), 
+                    map_location='cpu',
+                    weights_only=True
+                )
+                clean_state = self._sanitize_state_dict(raw_state)
+                missing, unexpected = base.load_state_dict(clean_state, strict=False)
+                print(f'    Done Strategy 2 completed (missing={len(missing)}, unexpected={len(unexpected)})')
+                
+                del raw_state, clean_state
+                gc.collect()
+                
+                return base
+            except Exception as e:
+                print(f'  Error Strategy 2 failed: {e}')
+
+        # Strategy 3: .pth fallback
+        if pth_files:
+            try:
+                print('  Strategy 3: .pth file fallback')
+                base = WhisperForConditionalGeneration.from_pretrained(
+                    self.config.encoder_model_id, 
+                    cache_dir=os.getenv('HF_HOME'), 
+                    low_cpu_mem_usage=True
+                )
+                pth_files.sort(key=lambda f: os.path.getsize(os.path.join(local_path, f)), reverse=True)
+                raw_state = torch.load(os.path.join(local_path, pth_files[0]), map_location='cpu')
+                clean_state = self._sanitize_state_dict(raw_state)
+                missing, unexpected = base.load_state_dict(clean_state, strict=False)
+                print(f'    Strategy 3 completed (missing={len(missing)}, unexpected={len(unexpected)})')
+                return base
+            except Exception as e:
+                print(f'  ❌ Strategy 3 failed: {e}')
+
+        print('  ⚠️  All strategies failed, falling back to base HF model')
+        return WhisperForConditionalGeneration.from_pretrained(
+            self.config.encoder_model_id, 
+            cache_dir=os.getenv('HF_HOME'),
+            low_cpu_mem_usage=True
+        )
+
+    def _load_whisper_from_file(self, file_path):
+        try:
+            base = WhisperForConditionalGeneration.from_pretrained(self.config.encoder_model_id, cache_dir=os.getenv('HF_HOME'))
+            raw_state = torch.load(file_path, map_location='cpu')
+            clean_state = self._sanitize_state_dict(raw_state)
+            missing, unexpected = base.load_state_dict(clean_state, strict=False)
+            print(f'  ✅ Single file load completed (missing={len(missing)}, unexpected={len(unexpected)})')
+            return base
+        except Exception as e:
+            print(f'  ❌ Single file load failed: {e}; reverting to HF model')
+            return WhisperForConditionalGeneration.from_pretrained(self.config.encoder_model_id, cache_dir=os.getenv('HF_HOME'))
 
     def forward(self, input_features, attention_mask=None, transcription_embeddings_list=None, **kwargs):
         bs = input_features.size(0)
@@ -146,6 +473,10 @@ class WhisperPerception(nn.Module):
                 f"Whisper expects the mel input features to be of length {expected_seq_length}, but found {input_features.shape[-1]}. Make sure to pad the input mel features to {expected_seq_length}."
             )
         
+        # Ensure input dtype matches model weights (important for mixed precision)
+        model_dtype = next(self.whisper.model.encoder.parameters()).dtype
+        if input_features.dtype != model_dtype:
+            input_features = input_features.to(model_dtype)
 
         inputs_embeds = nn.functional.gelu(self.whisper.model.encoder.conv1(input_features))
         inputs_embeds = nn.functional.gelu(self.whisper.model.encoder.conv2(inputs_embeds))
@@ -192,7 +523,7 @@ class WhisperPerception(nn.Module):
             return prompt_output
 
         else:
-            raise NotImplementedError(f"mode {self.mode} not implemented")
+            raise NotImplementedError(f"mode {self.config.connector_mode} not implemented")
     
     
 
@@ -210,6 +541,11 @@ class DeSTA25Config(PretrainedConfig):
                  use_lora=False,
                  audio_locator="<|AUDIO|>",
                  placeholder_token="<|reserved_special_token_87|>",
+                 whisper_local_weights=None,
+                 llm_local_weights=None,
+                 qformer_local_weights=None,
+                 whisper_force_manual_load=False,
+                 whisper_autoconvert_to_safetensors=True,
                  **kwargs):
         
         super().__init__(**kwargs)
@@ -223,8 +559,23 @@ class DeSTA25Config(PretrainedConfig):
         self.audio_locator = audio_locator
         self.placeholder_token = placeholder_token
 
-        self.llm_config = AutoConfig.from_pretrained(self.llm_model_id)
-        self.encoder_config = AutoConfig.from_pretrained(self.encoder_model_id)
+        # Add local weights paths
+        self.whisper_local_weights = whisper_local_weights
+        self.llm_local_weights = llm_local_weights  
+        self.qformer_local_weights = qformer_local_weights
+        self.whisper_force_manual_load = whisper_force_manual_load
+        self.whisper_autoconvert_to_safetensors = whisper_autoconvert_to_safetensors
+
+        # Load configs (prioritize local paths if available)
+        if self.llm_local_weights and os.path.isdir(self.llm_local_weights):
+            self.llm_config = AutoConfig.from_pretrained(self.llm_local_weights)
+        else:
+            self.llm_config = AutoConfig.from_pretrained(self.llm_model_id)
+            
+        if self.whisper_local_weights and os.path.isdir(self.whisper_local_weights):
+            self.encoder_config = AutoConfig.from_pretrained(self.whisper_local_weights)
+        else:
+            self.encoder_config = AutoConfig.from_pretrained(self.encoder_model_id)
 
         self.use_lora = use_lora
 
@@ -246,13 +597,39 @@ class DeSTA25AudioModel(PreTrainedModel):
         self.audio_locator = config.audio_locator
         self.placeholder_token = config.placeholder_token
 
-        print(f"Loading LLM model from {self.config.llm_model_id}")
-        self.llm_model = AutoModelForCausalLM.from_pretrained(
-            self.config.llm_model_id,
-            torch_dtype=torch.bfloat16,
-            cache_dir=cache_dir,
-            token=token,
-        )
+        # Load LLM model (prioritize local if available)
+        llm_local = getattr(self.config, "llm_local_weights", None)
+        if llm_local:
+            if os.path.isdir(llm_local):
+                print(f"🔧 Loading local LLM from: {llm_local}")
+                self.llm_model = AutoModelForCausalLM.from_pretrained(
+                    llm_local,
+                    dtype=torch.bfloat16,
+                    cache_dir=cache_dir,
+                    token=token,
+                )
+            elif llm_local.endswith((".pth", ".pt")):
+                print(f"🔧 Loading LLM weights from file: {llm_local}")
+                self.llm_model = AutoModelForCausalLM.from_config(self.config.llm_config)
+                state = torch.load(llm_local, map_location="cpu")
+                if "model" in state:
+                    state = state["model"]
+                elif "state_dict" in state:
+                    state = state["state_dict"]
+                missing, unexpected = self.llm_model.load_state_dict(state, strict=False)
+                self.llm_model.to(torch.bfloat16)
+                if missing or unexpected:
+                    print(f"   LLM loading: {len(missing)} missing, {len(unexpected)} unexpected keys")
+            else:
+                raise ValueError("llm_local_weights must be a directory or a .pth/.pt file")
+        else:
+            print(f"🔧 Loading LLM from HuggingFace: {self.config.llm_model_id}")
+            self.llm_model = AutoModelForCausalLM.from_pretrained(
+                self.config.llm_model_id,
+                dtype=torch.bfloat16,
+                cache_dir=cache_dir,
+                token=token,
+            )
 
         if self.config.use_lora:
             from peft import LoraConfig, get_peft_model
@@ -265,10 +642,19 @@ class DeSTA25AudioModel(PreTrainedModel):
             )
             self.llm_model = get_peft_model(self.llm_model, lora_config).base_model.model
         
-        print(f"Loading Audio model from {self.config.encoder_model_id}")
+        print(f"🔧 Loading Audio encoder from {self.config.encoder_model_id}")
         self.perception = WhisperPerception(self.config)
 
         self.configure_trainable_parameters()
+
+    def _device(self):
+        """Get device of the model parameters"""
+        return next(self.parameters()).device
+
+    @property
+    def device(self):
+        """Get device of the model parameters"""
+        return next(self.parameters()).device
 
     def forward(self, input_ids,
                 attention_mask, 
@@ -365,15 +751,16 @@ class DeSTA25AudioModel(PreTrainedModel):
 
         return inputs_embeds
         
-    def state_dict(self):
-        """
-        Only return "trainable" parameters, since most of the parameters are frozen
-        """
-        trainable_state_dict = OrderedDict()
-        for name, param in self.named_parameters():
-            if param.requires_grad:
-                trainable_state_dict[name] = param.data.clone().detach()
-        return trainable_state_dict
+    def state_dict(self, destination=None, prefix: str = '', keep_vars: bool = False):  # type: ignore[override]
+        full = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)  # type: ignore[arg-type]
+        trainable = OrderedDict()
+        named = dict(self.named_parameters())
+        for k, v in full.items():
+            base_name = k[len(prefix):] if prefix and k.startswith(prefix) else k
+            param = named.get(base_name, None)
+            if param is not None and param.requires_grad:
+                trainable[k] = v
+        return trainable
 
 
     def _generate_step(self, inputs, pad_token_id, temperature=0.7, top_p=0.9, max_new_tokens=512, do_sample=True):

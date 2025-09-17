@@ -1,0 +1,2 @@
+Removed extra test scripts: quick_test.py, test_whisper_loading.py, test_local_whisper.py, simple_test.py
+Retained: test_local_indic_whisper.py

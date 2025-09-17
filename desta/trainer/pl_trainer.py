@@ -1,7 +1,8 @@
 import pytorch_lightning as pl
 import torch
 from desta.utils.utils import run
-from apex.optimizers import FusedAdam
+# from apex.optimizers import FusedAdam
+from torch.optim import AdamW
 from desta.models.modeling_desta25 import DeSTA25AudioModel, DeSTA25Config
 from transformers import get_cosine_schedule_with_warmup
 import logging
@@ -35,6 +36,11 @@ class DeSTA25AudioPLModule(pl.LightningModule):
             use_lora=self.cfg.model.llm.use_lora if hasattr(self.cfg.model.llm, "use_lora") else False,
             audio_locator=self.cfg.model.audio_locator,
             placeholder_token=self.cfg.model.placeholder_token,
+            # Add support for local model paths
+            whisper_local_weights=getattr(self.cfg.model.encoder, "whisper_local_weights", None),
+            llm_local_weights=getattr(self.cfg.model.llm, "llm_local_weights", None),
+            qformer_local_weights=getattr(self.cfg.model.connector, "qformer_local_weights", None),
+            whisper_force_manual_load=getattr(self.cfg.model.encoder, "whisper_force_manual_load", False),
         )
 
         print("="*100)
@@ -42,18 +48,33 @@ class DeSTA25AudioPLModule(pl.LightningModule):
         self.model.config.train_id = 30678
         self.model.config.trainer_version = "ea4ad585d7d50d1bbd191d64d194c4bc5eabd537b6bcf97e6510f784e4cb2f0f"
 
-        # remove whisper decoder during PTL training (we only use Whisper decoder during inference)
-        del self.model.perception.whisper.model.decoder
-        del self.model.perception.whisper.proj_out
+        # Remove whisper decoder during PTL training (we only use Whisper encoder during training, decoder needed for inference)
+        if hasattr(self.model.perception.whisper, 'model') and hasattr(self.model.perception.whisper.model, 'decoder'):
+            print("🗑️ Removing Whisper decoder to save memory during training (encoder-only mode)")
+            del self.model.perception.whisper.model.decoder
+            if hasattr(self.model.perception.whisper, 'proj_out'):
+                del self.model.perception.whisper.proj_out
+            import gc
+            gc.collect()
 
-        # tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.model.llm.model_id, cache_dir=os.getenv("HF_HOME"))
+        # tokenizer (use local path if available for LLM)
+        llm_model_path = getattr(self.cfg.model.llm, "llm_local_weights", None) or self.cfg.model.llm.model_id
+        if llm_model_path and os.path.isdir(llm_model_path):
+            self.tokenizer = AutoTokenizer.from_pretrained(llm_model_path, cache_dir=os.getenv("HF_HOME"))
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.model.llm.model_id, cache_dir=os.getenv("HF_HOME"))
+        
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.tokenizer.padding_side = "left"
         self.tokenizer.add_tokens([self.cfg.model.audio_locator])
         
-        self.processor = AutoFeatureExtractor.from_pretrained(self.cfg.model.encoder.model_id, cache_dir=os.getenv("HF_HOME"))
+        # processor (use local path if available for encoder)
+        encoder_model_path = getattr(self.cfg.model.encoder, "whisper_local_weights", None) or self.cfg.model.encoder.model_id
+        if encoder_model_path and os.path.isdir(encoder_model_path):
+            self.processor = AutoFeatureExtractor.from_pretrained(encoder_model_path, cache_dir=os.getenv("HF_HOME"))
+        else:
+            self.processor = AutoFeatureExtractor.from_pretrained(self.cfg.model.encoder.model_id, cache_dir=os.getenv("HF_HOME"))
 
         self.metrics = ConsecutiveWordsAccuracyMetric()
         
@@ -151,7 +172,8 @@ class DeSTA25AudioPLModule(pl.LightningModule):
             write_report=True
         )
 
-        self.log("val/accuracy", report["accuracy_by_sample"], sync_dist=True)
+        if report is not None:
+            self.log("val/accuracy", report["accuracy_by_sample"], sync_dist=True)
         self.model.config.validation_id = 128000
         self.prediction_step_outputs.clear()
 
@@ -205,15 +227,19 @@ class DeSTA25AudioPLModule(pl.LightningModule):
             if name in self.model.trainable_parameter_names:
                 trainable_parameters.append(params)
 
-        optimizer = FusedAdam(trainable_parameters, 
-                              lr=self.cfg.optim.lr,
-                              betas=(self.cfg.optim.betas),
-                              weight_decay=self.cfg.optim.weight_decay,
-                              )
+        # optimizer = FusedAdam(trainable_parameters, 
+        #                       lr=self.cfg.optim.lr,
+        #                       betas=(self.cfg.optim.betas),
+        #                       weight_decay=self.cfg.optim.weight_decay,
+        #                       )
+        optimizer = AdamW(trainable_parameters, 
+                          lr=self.cfg.optim.lr,
+                          betas=self.cfg.optim.betas,
+                          weight_decay=self.cfg.optim.weight_decay)
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=self.cfg.optim.sched.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches
+            num_training_steps=int(self.trainer.estimated_stepping_batches)
         )
 
         for name in self.model.trainable_parameter_names:

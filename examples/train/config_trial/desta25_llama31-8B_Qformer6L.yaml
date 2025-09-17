@@ -37,8 +37,10 @@ model:
     freeze: True
 
   encoder:
-    model_id: openai/whisper-large-v3
+    # model_id: openai/whisper-large-v3
+    model_id: openai/whisper-medium
     freeze: True
+    whisper_local_weights: /home/daksh/MTP/DeSTA2/Models/hindi_models/whisper-medium-hi_alldata_multigpu
 
   connector:
     mode: qformer_1
